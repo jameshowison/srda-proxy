@@ -1,0 +1,136 @@
+Index: actionwebservice/test/dispatcher_action_controller_soap_test.rb
+===================================================================
+--- actionwebservice/test/dispatcher_action_controller_soap_test.rb	(revision 5955)
++++ actionwebservice/test/dispatcher_action_controller_soap_test.rb	(working copy)
+@@ -85,6 +85,16 @@
+     assert_equal "T25lIFdvcmxkIENhZsOp", retval.data.to_s
+   end
+ 
++  def test_require_soap_action_header
++    # no HTTP_SOAPACTION header will raise error by default
++    assert_raises(ActionWebService::Protocol::ProtocolError) do
++      do_method_call_with_soap_action_options(@direct_controller, :none, true, 'Add', 1, 2)
++    end
++    
++    # no HTTP_SOAPACTION header is ok if :require_soap_action_header option is set to false
++    assert_equal 3, do_method_call_with_soap_action_options(@direct_controller, :none, false, 'Add', 1, 2)
++  end
++  
+   protected
+     def exception_message(soap_fault_exception)
+       soap_fault_exception.detail.cause.message
+@@ -134,4 +144,24 @@
+       wsdl = controller.process(test_request, test_response).body
+       ensure_valid_wsdl(controller, wsdl, DispatcherTest::WsdlNamespace)
+     end
++    
++    def do_method_call_with_soap_action_options(container, soap_action_header, require_header, public_method_name, *params)
++      api = container.class.web_service_api
++      old_require_soap_action_header = api.require_soap_action_header
++      api.require_soap_action_header = require_header
++
++      method = api.public_api_method_instance(public_method_name)
++      protocol.register_api(api)
++      body = protocol.encode_request(public_method_name, params.dup, method.expects)    
++      ap_request = protocol.encode_action_pack_request(service_name(container), public_method_name, 
++                                                       body, :request_class => ActionController::TestRequest)
++      ap_request.env.delete('HTTP_SOAPACTION') if soap_action_header == :none
++      ap_response = ActionController::TestResponse.new    
++      container.process(ap_request, ap_response)
++      public_method_name, return_value = protocol.decode_response(ap_response.body)
++    
++      api.require_soap_action_header = old_require_soap_action_header      
++      return_value
++    end
++    
+ end
+Index: actionwebservice/lib/action_web_service/dispatcher/action_controller_dispatcher.rb
+===================================================================
+--- actionwebservice/lib/action_web_service/dispatcher/action_controller_dispatcher.rb	(revision 5955)
++++ actionwebservice/lib/action_web_service/dispatcher/action_controller_dispatcher.rb	(working copy)
+@@ -43,7 +43,10 @@
+             end
+             exception = nil
+             begin
+-              ws_request = discover_web_service_request(request)
++              api = self.class.web_service_api
++              options = {}
++              options[:require_soap_action_header] = api ? api.require_soap_action_header : true
++              ws_request = discover_web_service_request(request, options)
+             rescue Exception => e
+               exception = e
+             end
+Index: actionwebservice/lib/action_web_service/protocol/abstract.rb
+===================================================================
+--- actionwebservice/lib/action_web_service/protocol/abstract.rb	(revision 5955)
++++ actionwebservice/lib/action_web_service/protocol/abstract.rb	(working copy)
+@@ -7,7 +7,7 @@
+       def setup(controller)
+       end
+ 
+-      def decode_action_pack_request(action_pack_request)
++      def decode_action_pack_request(action_pack_request, options={})
+       end
+ 
+       def encode_action_pack_request(service_name, public_method_name, raw_body, options={})
+Index: actionwebservice/lib/action_web_service/protocol/soap_protocol.rb
+===================================================================
+--- actionwebservice/lib/action_web_service/protocol/soap_protocol.rb	(revision 5955)
++++ actionwebservice/lib/action_web_service/protocol/soap_protocol.rb	(working copy)
+@@ -34,8 +34,9 @@
+           SoapProtocol.new(controller.wsdl_namespace)
+         end
+ 
+-        def decode_action_pack_request(action_pack_request)
+-          return nil unless soap_action = has_valid_soap_action?(action_pack_request)
++        def decode_action_pack_request(action_pack_request, options={})
++          soap_action = has_valid_soap_action?(action_pack_request)
++          return nil if soap_action.nil? && options[:require_soap_action_header] != false
+           service_name = action_pack_request.parameters['action']
+           input_encoding = parse_charset(action_pack_request.env['HTTP_CONTENT_TYPE'])
+           protocol_options = { 
+Index: actionwebservice/lib/action_web_service/protocol/xmlrpc_protocol.rb
+===================================================================
+--- actionwebservice/lib/action_web_service/protocol/xmlrpc_protocol.rb	(revision 5955)
++++ actionwebservice/lib/action_web_service/protocol/xmlrpc_protocol.rb	(working copy)
+@@ -37,7 +37,7 @@
+           XmlRpcProtocol.new
+         end
+ 
+-        def decode_action_pack_request(action_pack_request)
++        def decode_action_pack_request(action_pack_request, options={})
+           service_name = action_pack_request.parameters['action']
+           decode_request(action_pack_request.raw_post, service_name)
+         end
+Index: actionwebservice/lib/action_web_service/protocol/discovery.rb
+===================================================================
+--- actionwebservice/lib/action_web_service/protocol/discovery.rb	(revision 5955)
++++ actionwebservice/lib/action_web_service/protocol/discovery.rb	(working copy)
+@@ -14,10 +14,10 @@
+ 
+       module InstanceMethods # :nodoc:
+         private
+-          def discover_web_service_request(action_pack_request)
++          def discover_web_service_request(action_pack_request, options={})
+             (self.class.read_inheritable_attribute("web_service_protocols") || []).each do |protocol|
+               protocol = protocol.create(self)
+-              request = protocol.decode_action_pack_request(action_pack_request)
++              request = protocol.decode_action_pack_request(action_pack_request, options)
+               return request unless request.nil?
+             end
+             nil
+Index: actionwebservice/lib/action_web_service/api.rb
+===================================================================
+--- actionwebservice/lib/action_web_service/api.rb	(revision 5955)
++++ actionwebservice/lib/action_web_service/api.rb	(working copy)
+@@ -21,6 +21,10 @@
+       # Whether to transform the public API method names into camel-cased names 
+       class_inheritable_option :inflect_names, true
+ 
++      # By default an HTTP_SOAPACTION header must be set for SOAP messages to be parsed.
++      # Setting this option to false can help handle clients that do not set this header.
++      class_inheritable_option :require_soap_action_header, true
++      
+       # Whether to allow ActiveRecord::Base models in <tt>:expects</tt>.
+       # The default is +false+; you should be aware of the security implications
+       # of allowing this, and ensure that you don't allow remote callers to
