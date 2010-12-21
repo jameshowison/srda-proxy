@@ -1,10 +1,15 @@
-This is a very simple proxy for the Notre Dame web forms, which I wrote just to have a SOAP WebService implementation that I could love.
+This is a very simple proxy for the Notre Dame web forms, which I wrote just
+to have a SOAP WebService implementation that I could love.
 
-All it does is expose a single Web Service defined in a WSDL file which, when the server is running, is available at APP_ROOT/notre_dame_sf/wsdl where APP_ROOT is wherever you have the application running.
+All it does is expose a single Web Service defined in a WSDL file which, when
+the server is running, is available at APP_ROOT/notre_dame_sf/wsdl where
+APP_ROOT is wherever you have the application running.
 
-I had troubles with the ActiveWebService plugin in Rails 2, so I've frozen Rails 1.3 something into vender/rails.
+I had troubles with the ActiveWebService plugin in Rails 2, so I've frozen
+Rails 1.3 something into vender/rails.
 
-The system does need the mechanize gem installed (and its dependencies).  On any sane system this should be a sudo gem install mechanize away.
+The system does need the mechanize gem installed (and its dependencies).  On
+any sane system this should be a sudo gem install mechanize away.
 
 Once that's in place it's a standard Rails start up:
 
